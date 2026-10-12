@@ -2,13 +2,7 @@
 
 A band above the message input that shows, at a glance, how close you are to your usage limits and how full the context is. It is a mod for Claude Code and the Claude desktop app's Code tab.
 
-```
-Model     Sonnet 5.5 | Effort ●●●○○ high                          [Hide ▾]
-Context   ▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱  42%  ☀️ Sunny   84k / 1M
-5-hour    ▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱  31%  ☀️ Sunny   resets in 1h 40m
-7-day     ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱  78%  🌧️ Rainy   resets in 2d 13h
-Cost      $5.08  ≈ 1.1 lattes ☕
-```
+<img width="764" height="115" alt="image" src="https://github.com/user-attachments/assets/84530bfc-21aa-445a-b4d0-7846641e999d" />
 
 ## What it shows
 
