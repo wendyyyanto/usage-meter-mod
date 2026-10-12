@@ -32,12 +32,35 @@ To remove it:
 claude plugin uninstall usage-meter-mod@yanto-mods
 ```
 
-## Notes
+## What it costs you
 
-- **Limits need a subscription.** The 5-hour and 7-day figures come from the account's rate-limit windows, which Claude reports only on a subscription and only after the first response. Until then those rows show `–`, with no bar.
-- **Effort appears after the first request.** A mod can only read the effort when a request is sent. A model with no effort setting shows `n/a`.
-- **Cost equivalents are rough.** They use a small hard-coded list of US prices in USD. Edit `THINGS` in `hooks/format.ts` for your own.
-- **Colours.** Titles use Claude's clay orange, effort Claude's blue, and the bars green, yellow, orange and red by zone. It was built mainly against the desktop app's Code tab; other surfaces may draw the emoji or box widths a little differently.
+- **No model tokens.** The mod never asks Claude anything and adds nothing to your prompt or your conversation. It only reads numbers the engine already has and draws them.
+- **One small network call.** About every two minutes, per open session, it asks `https://api.anthropic.com/api/oauth/usage` for your account's plan usage, the same figures the usage pane in the app shows. This is a plain metadata request, not a model request. The engine attaches your login to it itself, so the mod never sees your token, and the call can only go to Anthropic's own host.
+
+## Limitations
+
+**Where it works**
+
+- **Terminal and desktop app only.** The band uses the slot above the prompt, which only those two surfaces draw. It does not appear in VS Code or on mobile.
+- **Installed per machine.** User-scope install applies to your own sessions on that computer. Sessions that are already open pick it up when restarted or resumed.
+
+**Data**
+
+- **Limits need a subscription.** The 5-hour and 7-day figures are plan limits. On an API key or a third-party provider those rows show `–`, with no bar.
+- **The live source is not a documented API.** Anthropic's plan-usage endpoint could change or disappear. If the call fails, the band falls back to the figures from the session's last reply and says how old they are (`limits as of 2h ago`) once they are more than 3 minutes old.
+- **Figures can lag a little.** Limits refresh about every 2 minutes, and countdowns move once a minute.
+- **Many open sessions mean many calls.** Every open session polls on its own, and there is no back-off if the endpoint starts refusing requests.
+- **A window that has reset is never shown with its old number.** Past its reset time a row reads `window reset, updating…` until fresh figures arrive.
+- **If your organisation blocks non-essential traffic,** the live call is refused and only the fallback figures are used.
+- **Effort appears after the first request.** A mod can only read the effort when a request is sent, so a fresh session shows `–` until then. A model with no effort setting shows `n/a`.
+- **Cost equivalents are rough.** They use a small hard-coded list of US prices in USD, and the weather icons are only a metaphor for how full each limit is. Edit `THINGS` in `hooks/format.ts` for your own prices.
+
+**Display**
+
+- **It steps aside for surveys,** and the engine's own `[-]` mark can hide the whole band.
+- **Very narrow panes clip the line** instead of wrapping it.
+- **Emoji and bar glyphs depend on your font.** If one renders as a flat symbol or a box, that is the font.
+- **Colours.** Titles use Claude's clay orange, effort Claude's blue, and the bars green, yellow, orange and red by zone.
 
 ## Develop
 
