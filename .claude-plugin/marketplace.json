@@ -1,0 +1,12 @@
+{
+  "name": "yanto-mods",
+  "description": "Mods for Claude Code by wendyyyanto.",
+  "owner": { "name": "wendyyyanto" },
+  "plugins": [
+    {
+      "name": "usage-meter-mod",
+      "source": "./",
+      "description": "Band above the prompt: usage limits, context, model and effort, colour-coded."
+    }
+  ]
+}

@@ -66,6 +66,39 @@ export function countdown(iso: string | undefined, now: number) {
   return `${Math.max(1, m)}m`
 }
 
+export function ago(ms: number) {
+  const m = Math.floor(ms / 60000)
+  if (m < 1) return 'just now'
+  if (m < 60) return `${m}m ago`
+  const h = Math.floor(m / 60)
+  return h < 24 ? `${h}h ${m % 60}m ago` : `${Math.floor(h / 24)}d ago`
+}
+
+// Anthropic's plan-usage reply ({ five_hour: { utilization, resets_at }, seven_day: {...} }) in the
+// shape the session reports its limits in; anything it does not recognise is left out
+export function parseUsage(body: unknown) {
+  const out: { kind: string; percentUsed: number; resetsAt?: string }[] = []
+  if (!body || typeof body !== 'object') return out
+  for (const kind of ['five_hour', 'seven_day']) {
+    const w = (body as Record<string, { utilization?: unknown; resets_at?: unknown } | null>)[kind]
+    if (typeof w?.utilization === 'number' && Number.isFinite(w.utilization)) {
+      out.push({
+        kind,
+        percentUsed: Math.round(w.utilization * 10) / 10,
+        resetsAt: typeof w.resets_at === 'string' ? w.resets_at : undefined,
+      })
+    }
+  }
+  return out
+}
+
+// one muted line saying where the limits came from and how old they are, so a stale band explains itself
+export function limitsNote(source: 'live' | 'session' | undefined, error: string | undefined, ageMs: number | undefined) {
+  const age = ageMs === undefined ? '' : ` · ${ago(ageMs)}`
+  if (source === 'live' && !error) return `limits live${age}`
+  return `limits from last reply${error ? ` (${error})` : ''}${age}`
+}
+
 const NAMES: Record<string, [string, string]> = {
   five_hour: ['5h', '5-hour'],
   seven_day: ['7d', '7-day'],

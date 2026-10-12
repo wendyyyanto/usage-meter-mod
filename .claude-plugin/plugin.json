@@ -1,0 +1,10 @@
+{
+  "name": "usage-meter-mod",
+  "version": "0.1.0",
+  "description": "Band above the prompt: usage limits, context, model and effort, colour-coded.",
+  "author": { "name": "wendyyyanto" },
+  "license": "MIT",
+  "repository": "https://github.com/wendyyyanto/usage-meter-mod",
+  "keywords": ["usage", "limits", "context", "status", "mod"],
+  "types": "./types/index.d.ts"
+}

@@ -42,13 +42,16 @@ claude plugin uninstall usage-meter-mod@yanto-mods
 **Where it works**
 
 - **Terminal and desktop app only.** The band uses the slot above the prompt, which only those two surfaces draw. It does not appear in VS Code or on mobile.
+- **Not tested everywhere.** It was built mainly against the desktop app's Code tab. It has not been tested on API-key accounts, VS Code or mobile, and other surfaces may draw the emoji or box widths a little differently.
 - **Installed per machine.** User-scope install applies to your own sessions on that computer. Sessions that are already open pick it up when restarted or resumed.
 
 **Data**
 
 - **Limits need a subscription.** The 5-hour and 7-day figures are plan limits. On an API key or a third-party provider those rows show `–`, with no bar.
-- **The live source is not a documented API.** Anthropic's plan-usage endpoint could change or disappear. If the call fails, the band falls back to the figures from the session's last reply and says how old they are (`limits as of 2h ago`) once they are more than 3 minutes old.
-- **Figures can lag a little.** Limits refresh about every 2 minutes, and countdowns move once a minute.
+- **The live source is not a documented API.** Anthropic's plan-usage endpoint could change or disappear. If the call fails, the band falls back to the figures from the session's last reply.
+- **The band says where its limits came from.** The Cost row ends with a muted line: `limits live · just now` when the figures are fresh from your account, or `limits from last reply (HTTP 503) · 4m ago` with the reason when the live call failed (`no login`, `no subscription login`, `HTTP <status>`, `unexpected reply` or `fetch failed`). If a session shows no such line, it is running an older version of the mod; restart or resume it.
+- **A fresh live reading outranks the session's own figures.** For 5 minutes after a successful fetch, the limits a reply reports do not replace it. A reply also triggers a fresh fetch within a minute.
+- **Figures can lag a little.** Limits refresh at least every 2 minutes, and countdowns move once a minute.
 - **Many open sessions mean many calls.** Every open session polls on its own, and there is no back-off if the endpoint starts refusing requests.
 - **A window that has reset is never shown with its old number.** Past its reset time a row reads `window reset, updating…` until fresh figures arrive.
 - **If your organisation blocks non-essential traffic,** the live call is refused and only the fallback figures are used.

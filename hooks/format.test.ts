@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 
-import { cells, zone, COLORS, modelName, effortView, tokens, countdown, costEquiv, weather } from './format'
+import { ago, cells, zone, COLORS, modelName, effortView, tokens, countdown, costEquiv, limitsNote, parseUsage, weather } from './format'
 
 test('bar cells: proportional, at least one for any use, clamped', async () => {
   expect(cells(31, 20)).toBe(6)
@@ -64,4 +64,37 @@ test('cost equivalents pick the biggest thing the cost covers', async () => {
   expect(costEquiv(12)).toBe('≈ 1.2 burritos 🌯')
   expect(costEquiv(200)).toBe('≈ 1.3 concert tickets 🎤')
   expect(costEquiv(5000)).toBe('≈ 33 concert tickets 🎤')
+})
+
+test('the plan-usage reply is read in the session’s shape', async () => {
+  const body = {
+    five_hour: { utilization: 43.0, resets_at: '2026-10-12T12:20:00.337907+00:00', limit_dollars: null },
+    seven_day: { utilization: 29.4, resets_at: '2026-10-14T19:00:00.337929+00:00' },
+    seven_day_opus: null,
+    iguana_necktie: { utilization: 0.0, resets_at: '2026-11-05T07:59:00+00:00' },
+  }
+  expect(parseUsage(body)).toEqual([
+    { kind: 'five_hour', percentUsed: 43, resetsAt: '2026-10-12T12:20:00.337907+00:00' },
+    { kind: 'seven_day', percentUsed: 29.4, resetsAt: '2026-10-14T19:00:00.337929+00:00' },
+  ])
+  expect(parseUsage({ five_hour: null, seven_day: { utilization: 'x' } })).toEqual([])
+  expect(parseUsage(null)).toEqual([])
+  expect(parseUsage('nope')).toEqual([])
+  expect(Date.parse('2026-10-12T12:20:00.337907+00:00')).toBeGreaterThan(0) // microsecond stamps parse
+})
+
+test('ago reads naturally', async () => {
+  expect(ago(20_000)).toBe('just now')
+  expect(ago(4 * 60_000)).toBe('4m ago')
+  expect(ago(135 * 60_000)).toBe('2h 15m ago')
+  expect(ago(50 * 3_600_000)).toBe('2d ago')
+})
+
+test('the limits note says where they came from', async () => {
+  expect(limitsNote('live', undefined, 20_000)).toBe('limits live · just now')
+  expect(limitsNote('live', undefined, 3 * 60_000)).toBe('limits live · 3m ago')
+  expect(limitsNote('session', 'HTTP 401', 4 * 60_000)).toBe('limits from last reply (HTTP 401) · 4m ago')
+  expect(limitsNote('live', 'HTTP 429', 4 * 60_000)).toBe('limits from last reply (HTTP 429) · 4m ago')
+  expect(limitsNote(undefined, 'no login', undefined)).toBe('limits from last reply (no login)')
+  expect(limitsNote('session', undefined, 10_000)).toBe('limits from last reply · just now')
 })
