@@ -1,6 +1,6 @@
 {
 	"name": "usage-meter-mod",
-	"version": "0.1.3",
+	"version": "0.1.4",
 	"description": "A band above the message input that shows, at a glance, how close you are to your usage limits and how full the context is. It is a mod for Claude Code and the Claude desktop app's Code tab.",
 	"author": { "name": "wendyyyanto" },
 	"license": "MIT",
