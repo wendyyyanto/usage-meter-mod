@@ -244,34 +244,43 @@ test('a window past its reset is never shown with the old figure', async ($, on)
   await ui.unmount()
 })
 
-test('idle: the limits are re-read every minute, and a running turn is not on the clock', async ($, on) => {
+// An active session (a turn is running) has no idle clock, so what these tests count is only what the
+// events ask for. `activate` starts a conversation and waits out its own refresh.
+const activate = async ($: any, clock: any) => {
+  await begin($)
+  await clock.advance(5_000) // the start's refresh, now or when the minimum gap ends
+}
+
+test('idle: the limits are re-read every 5 seconds; a running turn takes the clock off', async ($, on) => {
   const clock = bottom(on, 'claude-sonnet-5-5', { live: LIVE_NOW, usage: STALE_USAGE })
   await $.session.start(START)
   await clock.advance(0)
-  expect(LIVE.calls).toBe(1)
+  expect(LIVE.calls).toBe(1) // the new session's own read
 
-  await clock.advance(75_000) // the first idle tick falls between 60 and 75 s (a random head start)
-  expect(LIVE.calls).toBe(2)
-  await clock.advance(60_000)
-  expect(LIVE.calls).toBe(3)
+  await clock.advance(60_000) // a tick every 5 s after a random 0-5 s head start: 11 or 12 of them
+  expect(LIVE.calls).toBeGreaterThanOrEqual(12)
+  expect(LIVE.calls).toBeLessThanOrEqual(13)
 
-  await begin($) // a turn is running: the clock leaves the refresh to its finish
+  const idleCalls = LIVE.calls
+  await activate($, clock) // a conversation starts: one read for the start, then the clock stays out of it
+  expect(LIVE.calls).toBeGreaterThan(idleCalls)
+  const active = LIVE.calls
   await clock.advance(10 * 60_000)
-  expect(LIVE.calls).toBe(3)
+  expect(LIVE.calls).toBe(active)
 
-  await finish($) // it finishes: one refresh at once, and the idle minute resumes
+  await finish($) // it finishes: one read now, and the 5-second clock resumes
   await clock.advance(0)
-  expect(LIVE.calls).toBe(4)
-  await clock.advance(75_000)
-  expect(LIVE.calls).toBeGreaterThan(4)
+  expect(LIVE.calls).toBe(active + 1)
+  await clock.advance(60_000)
+  expect(LIVE.calls).toBeGreaterThanOrEqual(active + 1 + 10)
 })
 
 test('during a turn the pane holds its figures; the finish refreshes at once', async ($, on) => {
   const clock = bottom(on, 'claude-sonnet-5-5', { live: LIVE_NOW, usage: STALE_USAGE })
   await $.session.start(START)
   await clock.advance(0)
+  await activate($, clock)
 
-  await begin($)
   LIVE.body = live(50, '2026-10-12T13:43:00+00:00', 30, '2026-10-16T19:00:00+00:00')
   await clock.advance(10 * 60_000) // ten minutes of a running turn
   let ui = await mount($)
@@ -282,8 +291,22 @@ test('during a turn the pane holds its figures; the finish refreshes at once', a
   await clock.advance(0)
   ui = await mount($)
   const text = (await lines(ui)).map(flat)
-  expect(text[2]).toMatch(/5-hour.*50%.*resets in 3h 33m/) // the countdown is worked out at this redraw
+  expect(text[2]).toMatch(/5-hour.*50%.*resets in 3h 32m/) // the countdown is worked out at this redraw
   expect(text[3]).toMatch(/7-day.*30%/)
+  await ui.unmount()
+})
+
+test('a conversation starting reads the limits at once', async ($, on) => {
+  const clock = bottom(on, 'claude-sonnet-5-5', { live: LIVE_NOW, usage: STALE_USAGE })
+  await $.session.start(START)
+  await clock.advance(0)
+  await clock.advance(30_000) // idle ticks come and go
+  LIVE.body = live(55, '2026-10-12T13:43:00+00:00', 30, '2026-10-16T19:00:00+00:00')
+
+  await begin($) // no tick in between, and none after: a running turn has no idle clock
+  await clock.advance(5_000) // only the start itself can have fetched the new figures
+  const ui = await mount($)
+  expect(flat((await lines(ui))[2])).toMatch(/5-hour.*55%/)
   await ui.unmount()
 })
 
@@ -291,19 +314,20 @@ test('every finished conversation, main or subagent, refreshes; a burst ends on 
   const clock = bottom(on, 'claude-sonnet-5-5', { live: LIVE_NOW, usage: STALE_USAGE })
   await $.session.start(START)
   await clock.advance(0)
-  expect(LIVE.calls).toBe(1)
-
+  await activate($, clock)
   await clock.advance(30_000)
+  const base = LIVE.calls
+
   await finish($, 'sub-1') // a subagent's conversation finished
   await clock.advance(0)
-  expect(LIVE.calls).toBe(2)
+  expect(LIVE.calls).toBe(base + 1)
 
   LIVE.body = live(61, '2026-10-12T13:43:00+00:00', 30, '2026-10-16T19:00:00+00:00')
-  await Promise.all([finish($, 'sub-2'), finish($), finish($, 'sub-3')]) // three at once, right after a request
+  await Promise.all([finish($, 'sub-2'), finish($, 'sub-3'), finish($, 'sub-4')]) // three at once, right after a request
   await clock.advance(0)
-  expect(LIVE.calls).toBe(2) // none inside the minimum gap...
-  await clock.advance(20_000)
-  expect(LIVE.calls).toBe(3) // ...one when the gap ends, so the burst still ends on fresh figures
+  expect(LIVE.calls).toBe(base + 1) // none inside the minimum gap...
+  await clock.advance(5_000)
+  expect(LIVE.calls).toBe(base + 2) // ...one when the gap ends, so the burst still ends on fresh figures
   const ui = await mount($)
   expect(flat((await lines(ui))[2])).toMatch(/5-hour.*61%/)
   await ui.unmount()
@@ -313,66 +337,64 @@ test('a reply alone does not fetch', async ($, on) => {
   const clock = bottom(on, 'claude-sonnet-5-5', { live: LIVE_NOW, usage: STALE_USAGE })
   await $.session.start(START)
   await clock.advance(0)
+  await activate($, clock)
+  const base = LIVE.calls
 
-  await clock.advance(30_000)
   await $.session.measure(WORKING) // a reply updates context and cost only
-  await clock.advance(0)
-  expect(LIVE.calls).toBe(1)
+  await clock.advance(1_000)
+  expect(LIVE.calls).toBe(base)
 })
 
 test('HTTP 429: it honours Retry-After, keeps the last good figures, and resumes afterwards', async ($, on) => {
   const clock = bottom(on, 'claude-sonnet-5-5', { live: LIVE_NOW, usage: STALE_USAGE })
   await $.session.start(START)
   await clock.advance(0)
-
+  await activate($, clock)
   await clock.advance(30_000)
+  const base = LIVE.calls
+
   LIVE.status = 429
   LIVE.headers = { 'retry-after': '120' }
-  await finish($)
+  await finish($, 'sub')
   await clock.advance(0)
-  expect(LIVE.calls).toBe(2)
+  expect(LIVE.calls).toBe(base + 1)
 
   let ui = await mount($)
   expect(flat((await lines(ui))[2])).toMatch(/5-hour.*32%/) // still the last good reading, no flip to anything else
   expect((await lines(ui)).length).toBe(5)
   await ui.unmount()
 
-  await clock.advance(60_000) // still inside the pause: a finished turn does not ask
-  await finish($)
+  await clock.advance(60_000) // still inside the pause: a finished conversation does not ask
+  await finish($, 'sub')
   await clock.advance(0)
-  expect(LIVE.calls).toBe(2)
+  expect(LIVE.calls).toBe(base + 1)
 
   LIVE.status = 0 // the endpoint recovers, with new figures
   LIVE.body = live(40, '2026-10-12T13:43:00+00:00', 29, '2026-10-16T19:00:00+00:00')
   await clock.advance(70_000) // past the pause
-  await finish($)
+  await finish($, 'sub')
   await clock.advance(0)
-  expect(LIVE.calls).toBe(3)
+  expect(LIVE.calls).toBe(base + 2)
   ui = await mount($)
   expect(flat((await lines(ui))[2])).toMatch(/5-hour.*40%/)
   await ui.unmount()
 })
 
-test('HTTP 429 with no Retry-After waits five minutes', async ($, on) => {
+test('HTTP 429 with no Retry-After waits five minutes, idle ticks included', async ($, on) => {
   const clock = bottom(on, 'claude-sonnet-5-5', { live: LIVE_NOW, usage: STALE_USAGE })
   await $.session.start(START)
   await clock.advance(0)
-
+  await clock.advance(30_000) // idle: ticks read the limits every 5 s
   LIVE.status = 429
-  await clock.advance(30_000)
-  await finish($)
-  await clock.advance(0)
-  expect(LIVE.calls).toBe(2)
+  await clock.advance(5_000) // the next tick is refused: that is the 429
+  const refused = LIVE.calls
 
-  await clock.advance(4 * 60_000)
-  await finish($)
-  await clock.advance(0)
-  expect(LIVE.calls).toBe(2) // 4 minutes after the 429: still paused
+  await clock.advance(4 * 60_000) // four minutes of idle ticks, all inside the pause
+  expect(LIVE.calls).toBe(refused)
 
-  await clock.advance(90_000)
-  await finish($)
-  await clock.advance(0)
-  expect(LIVE.calls).toBe(3) // past 5 minutes
+  LIVE.status = 0
+  await clock.advance(90_000) // past five minutes: the ticks ask again
+  expect(LIVE.calls).toBeGreaterThan(refused)
 })
 
 test('a reply with no limits does not wipe what was fetched', async ($, on) => {

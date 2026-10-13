@@ -118,7 +118,7 @@ test("the plan-usage reply is read in the session’s shape", async () => {
 test("Retry-After is seconds or a date, bounded", async () => {
 	const now = Date.parse("2026-10-13T08:00:00Z");
 	expect(retryDelay("120", now)).toBe(120_000);
-	expect(retryDelay("5", now)).toBe(20_000); // never under the minimum gap
+	expect(retryDelay("1", now)).toBe(5_000); // never under the minimum gap
 	expect(retryDelay("999999", now)).toBe(3_600_000); // never over an hour
 	expect(retryDelay("Tue, 13 Oct 2026 08:03:00 GMT", now)).toBe(180_000);
 	expect(retryDelay(undefined, now)).toBe(300_000); // none given: five minutes

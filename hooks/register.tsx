@@ -43,14 +43,14 @@ const BAR = 20; // cells in a bar: 5% a cell
 // A session only learns its limits from its own replies, so they go stale while it idles and miss
 // what other sessions spend. The account's plan usage is what the real usage pane reads; the engine
 // holds the credential and attaches it (the mod never sees it), and only for Anthropic's own host.
-// It is asked for when a session starts, each time any turn finishes (main or subagent), and once a
-// minute while the session sits idle. A running turn is never on the clock: its finish asks instead.
-// Every ask goes through one guard (one request at a time, a minimum gap, a pause after a 429), so many
-// open sessions cannot add up to a flood of requests (that is what answered HTTP 429).
+// It is asked for when a session starts, when a conversation starts, each time any turn finishes (main
+// or subagent), and every 5 seconds while the session sits idle (no turn running). A running turn is
+// never on the clock: its start and its finishes ask instead.
+// Every ask goes through one guard (one request at a time, a minimum gap, a pause after a 429).
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const LIVE_FRESH = 300_000; // a live reading this young outranks the session's own figures
-const IDLE_EVERY = 60_000; // an idle session re-reads the limits this often
-const IDLE_JITTER = 15_000; // sessions that start together do not all tick together
+const IDLE_EVERY = 5_000; // an idle session re-reads the limits this often
+const IDLE_JITTER = 5_000; // sessions that start together do not all tick together
 
 // a reload starts the module afresh, so all of these start over
 let isFetching = false; // one request at a time
@@ -101,7 +101,7 @@ const refreshLimits = async ($: EngineInterface) => {
 	}
 };
 
-// while idle: re-read the limits and redraw, so the countdowns keep counting
+// while idle (no turn running): re-read the limits and redraw, so the countdowns keep counting
 const idleTick = async ($: EngineInterface) => {
 	if (isActive) return;
 	await refreshLimits($);
@@ -135,7 +135,7 @@ export const register: Register = (on) => {
 			};
 		});
 		refreshLimits($).catch(() => {});
-		// and again every minute while idle; a random head start keeps sessions that began together apart
+		// and again every 5 seconds while idle; a random head start keeps sessions that began together apart
 		$.clock.after(Math.floor(Math.random() * IDLE_JITTER), () => {
 			$.clock.every(IDLE_EVERY, () => {
 				idleTick($).catch(() => {});
@@ -144,8 +144,10 @@ export const register: Register = (on) => {
 		return next(e);
 	});
 
+	// a conversation starts: the session is busy from here, and the limits are read once now
 	on("turn.start", async ($, e, next) => {
 		isActive = true;
+		refreshLimits($).catch(() => {});
 		return next(e);
 	});
 

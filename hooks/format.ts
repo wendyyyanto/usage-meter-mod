@@ -78,7 +78,7 @@ export function countdown(iso: string | undefined, now: number) {
 }
 
 // requests never closer than `min`; after a 429 with no usable Retry-After, wait `default`; never wait past `max`
-export const PAUSE = { min: 20_000, default: 300_000, max: 3_600_000 };
+export const PAUSE = { min: 5_000, default: 300_000, max: 3_600_000 };
 
 // how long to hold off after a 429: Retry-After is seconds or an HTTP date
 export function retryDelay(header: string | undefined, now: number) {
