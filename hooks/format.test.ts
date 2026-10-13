@@ -9,7 +9,6 @@ import {
 	tokens,
 	countdown,
 	costEquiv,
-	hhmm,
 	parseUsage,
 	retryDelay,
 	weather

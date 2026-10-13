@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing'
 
-import { COLORS, hhmm } from './format'
+import { COLORS } from './format'
 
 const PROPS = {
   hasSurvey: false,
@@ -87,7 +87,7 @@ test('a new session shows the band at once, with its starting figures', async ($
     const ui = await mount($, surface)
     expect((await ui.find({ key: 'toggle' }))?.text).toContain('Hide')
     const rows = (await lines(ui)).map(flat)
-    expect(rows.length).toBe(6) // the last row is the limits note
+    expect(rows.length).toBe(5) // model, context, 5-hour, 7-day, cost: no note row under them
     expect(rows[0]).toMatch(/Model.*Opus 5\.5.*Effort.*●●●○○.*high/) // the effort it is set to, before any request
     expect(rows[1]).toMatch(/Context.*0%.*Sunny.*0 \/ 200k/) // context 0
     expect(rows[1]).toContain('▱'.repeat(20)) // an empty bar, not a placeholder
@@ -223,13 +223,9 @@ test('live account usage replaces the session’s stale limits', async ($, on) =
   expect(text[2]).toMatch(/5-hour.*32%.*resets in 3h 43m/)
   expect(text[3]).toMatch(/7-day.*28%.*resets in 4d 9h/)
   expect(flat(await ui.drawn())).not.toMatch(/70%|22%/)
-  // the note gets its own last row, right-aligned, apart from the cost
   const rows = await lines(ui)
+  expect(rows.length).toBe(5) // the cost row is the last: nothing is said about where the figures came from
   expect(flat(rows[4])).toMatch(/^Cost/)
-  expect(flat(rows[4])).not.toContain('live')
-  expect(rows[5].props.width).toBe(100)
-  expect(rows[5].props.justifyContent).toBe('flex-end')
-  expect(flat(rows[5])).toBe(`live · ${hhmm(NOW)}`)
   await ui.unmount()
 })
 
@@ -335,11 +331,10 @@ test('HTTP 429: it honours Retry-After, keeps the last good figures, and resumes
   await finish($)
   await clock.advance(0)
   expect(LIVE.calls).toBe(2)
-  const pausedUntil = NOW + 30_000 + 120_000
 
   let ui = await mount($)
   expect(flat((await lines(ui))[2])).toMatch(/5-hour.*32%/) // still the last good reading, no flip to anything else
-  expect(flat((await lines(ui))[5])).toBe(`as of ${hhmm(NOW)} · 429, retry ${hhmm(pausedUntil)}`)
+  expect((await lines(ui)).length).toBe(5)
   await ui.unmount()
 
   await clock.advance(60_000) // still inside the pause: a finished turn does not ask
@@ -347,13 +342,14 @@ test('HTTP 429: it honours Retry-After, keeps the last good figures, and resumes
   await clock.advance(0)
   expect(LIVE.calls).toBe(2)
 
-  LIVE.status = 0 // the endpoint recovers
+  LIVE.status = 0 // the endpoint recovers, with new figures
+  LIVE.body = live(40, '2026-10-12T13:43:00+00:00', 29, '2026-10-16T19:00:00+00:00')
   await clock.advance(70_000) // past the pause
   await finish($)
   await clock.advance(0)
   expect(LIVE.calls).toBe(3)
   ui = await mount($)
-  expect(flat((await lines(ui))[5])).toBe(`live · ${hhmm(NOW + 160_000)}`)
+  expect(flat((await lines(ui))[2])).toMatch(/5-hour.*40%/)
   await ui.unmount()
 })
 
@@ -390,14 +386,17 @@ test('a reply with no limits does not wipe what was fetched', async ($, on) => {
   await ui.unmount()
 })
 
-test('when live limits cannot be fetched the band says why, without naming where the figures came from', async ($, on) => {
+test('when live limits cannot be fetched the session’s own figures show, with nothing said about it', async ($, on) => {
   const clock = bottom(on, 'claude-sonnet-5-5') // the fetch answers 503
   await $.session.start(START)
   await $.session.measure(WORKING)
   await clock.advance(0)
 
   const ui = await mount($)
-  expect(flat((await lines(ui))[5])).toBe('live unavailable · HTTP 503')
+  const rows = (await lines(ui)).map(flat)
+  expect(rows.length).toBe(5)
+  expect(rows[2]).toMatch(/5-hour.*31%/)
+  expect(rows[3]).toMatch(/7-day.*78%/)
   await ui.unmount()
 })
 
@@ -420,14 +419,19 @@ test('a recent live reading outranks the session’s own figures; an old one doe
   await ui.unmount()
 })
 
-const showsWhy = (auth: 'none' | 'api-key', why: string) => async ($: any, on: any) => {
-  const clock = bottom(on, 'claude-sonnet-5-5', { auth })
+// without a subscription login there are no plan limits to ask for: no request is made, and the
+// session's own figures show
+const withoutPlanLogin = (auth: 'none' | 'api-key') => async ($: any, on: any) => {
+  const clock = bottom(on, 'claude-sonnet-5-5', { auth, live: LIVE_NOW })
   await $.session.start(START)
   await $.session.measure(WORKING)
   await clock.advance(0)
+  expect(LIVE.calls).toBe(0)
   const ui = await mount($)
-  expect(flat((await lines(ui))[5])).toBe(`live unavailable · ${why}`)
+  const rows = (await lines(ui)).map(flat)
+  expect(rows.length).toBe(5)
+  expect(rows[2]).toMatch(/5-hour.*31%/)
   await ui.unmount()
 }
-test('no login: the band says so', showsWhy('none', 'no login'))
-test('an API-key login has no plan limits: the band says so', showsWhy('api-key', 'no plan'))
+test('no login: no request is made, the session’s figures show', withoutPlanLogin('none'))
+test('an API-key login has no plan limits: no request is made', withoutPlanLogin('api-key'))

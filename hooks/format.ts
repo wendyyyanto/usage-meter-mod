@@ -77,12 +77,7 @@ export function countdown(iso: string | undefined, now: number) {
 	return `${Math.max(1, m)}m`;
 }
 
-export const hhmm = (ms: number) => {
-	const d = new Date(ms);
-	return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-};
-
-// requests never closer than MIN_GAP; after a 429 with no usable Retry-After, wait DEFAULT; never wait past MAX
+// requests never closer than `min`; after a 429 with no usable Retry-After, wait `default`; never wait past `max`
 export const PAUSE = { min: 20_000, default: 300_000, max: 3_600_000 };
 
 // how long to hold off after a 429: Retry-After is seconds or an HTTP date

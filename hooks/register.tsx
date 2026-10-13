@@ -8,7 +8,6 @@ import {
 	costEquiv,
 	countdown,
 	effortView,
-	hhmm,
 	longKind,
 	modelName,
 	PAUSE,
@@ -60,7 +59,7 @@ let isTrailing = false; // a skipped ask is already waiting for the gap to end
 let lastFetch = 0;
 let pausedUntil = 0; // after a 429, no request before this
 
-// A failed fetch keeps the last good figures and says why on the band instead of failing silently.
+// Any failure leaves the band as it is: the last good figures, or the session's own.
 const refreshLimits = async ($: EngineInterface) => {
 	if (isFetching) return;
 	isFetching = true;
@@ -82,30 +81,21 @@ const refreshLimits = async ($: EngineInterface) => {
 		}
 		lastFetch = now;
 		const auth = await $.session.authorize();
-		if (!auth) return await patch($, { rateError: "no login" });
-		if (auth.kind !== "bearer")
-			return await patch($, { rateError: "no plan" });
+		if (auth?.kind !== "bearer") return; // no subscription login: there are no plan limits
 		const r = await $.http.fetch(USAGE_URL, {
 			auth: auth.handle,
 			headers: { "anthropic-beta": "oauth-2025-04-20" }
 		});
 		if (r.status === 429) {
 			pausedUntil = now + retryDelay(r.headers["retry-after"], now);
-			return await patch($, {
-				rateError: `429, retry ${hhmm(pausedUntil)}`
-			});
+			return;
 		}
-		if (!r.ok) return await patch($, { rateError: `HTTP ${r.status}` });
+		if (!r.ok) return;
 		const limits = parseUsage(JSON.parse(r.text));
-		if (!limits.length) return await patch($, { rateError: "bad reply" });
-		await patch($, {
-			rateLimits: limits,
-			rateAt: now,
-			rateSource: "live",
-			rateError: undefined
-		});
+		if (limits.length)
+			await patch($, { rateLimits: limits, rateAt: now, rateSource: "live" });
 	} catch {
-		await patch($, { rateError: "fetch failed" });
+		// keep what the band already shows
 	} finally {
 		isFetching = false;
 	}
