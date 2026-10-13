@@ -9,7 +9,7 @@ export type UsageMeterSnap = {
   rateSource?: 'live' | 'session'
   // why the last live fetch did not give limits; undefined when it did
   rateError?: string
-  // moves every minute so the band redraws and its countdowns keep counting
+  // moves every minute while idle so the band redraws and its countdowns keep counting
   tickAt?: number
   costUsd?: number
 }

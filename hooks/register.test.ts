@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing'
 
-import { COLORS } from './format'
+import { COLORS, hhmm } from './format'
 
 const PROPS = {
   hasSurvey: false,
@@ -26,61 +26,104 @@ const START = { cwd: '/x', surface: 'terminal', isInteractive: true } as never
 const SURFACES = ['terminal', 'desktop'] as const
 const STEP = { turnId: 't', index: 0, model: 'claude-sonnet-5-5', messageCount: 1 }
 
-// what the account's plan-usage endpoint answers; null: it fails, so only the session's own figures exist
-const LIVE = { body: null as object | null }
+// what the account's plan-usage endpoint answers: body null makes it fail (503), status 429 rate-limits it
+const LIVE = { body: null as object | null, status: 0, headers: {} as Record<string, string>, calls: 0 }
 const live = (five: number, fiveResets: string, seven: number, sevenResets: string) => ({
   five_hour: { utilization: five, resets_at: fiveResets, limit_dollars: null },
   seven_day: { utilization: seven, resets_at: sevenResets, limit_dollars: null },
 })
+const NOW = Date.parse('2026-10-12T10:00:00Z') // where the mock clock starts
 
-const bottom = (on: any, model: string, opts: { live?: object | null; usage?: object; auth?: 'none' | 'api-key' } = {}) => {
-  LIVE.body = opts.live ?? null
+const bottom = (
+  on: any,
+  model: string,
+  opts: { live?: object | null; usage?: object; auth?: 'none' | 'api-key'; settings?: object | 'fail' } = {},
+) => {
+  Object.assign(LIVE, { body: opts.live ?? null, status: 0, headers: {}, calls: 0 })
   on('session.usage', () => ({ value: opts.usage ?? FRESH }))
   on('session.model', () => ({ value: model }))
+  on('settings.read', () => (opts.settings === 'fail' ? { deny: 'no settings' } : { value: opts.settings ?? {} }))
   on('session.authorize', () => ({ value: opts.auth === 'none' ? null : { handle: 'h', kind: opts.auth ?? 'bearer' } }))
-  on('http.fetch', () => ({
-    value: LIVE.body
-      ? { status: 200, ok: true, headers: {}, text: JSON.stringify(LIVE.body) }
-      : { status: 503, ok: false, headers: {}, text: '' },
-  }))
+  on('http.fetch', () => {
+    LIVE.calls += 1
+    if (LIVE.status === 429) return { value: { status: 429, ok: false, headers: LIVE.headers, text: '' } }
+    return {
+      value: LIVE.body
+        ? { status: 200, ok: true, headers: {}, text: JSON.stringify(LIVE.body) }
+        : { status: 503, ok: false, headers: {}, text: '' },
+    }
+  })
   on('session.start', (_: unknown, e: any) => ({ cwd: e.cwd }))
   on('session.measure', (_: unknown, e: any) => ({ changed: e.changed }))
+  on('turn.start', (_: unknown, e: any) => ({ turnId: e.turnId }))
+  on('turn.complete', (_: unknown, e: any) => ({ text: e.answer }))
   on('turn.step', async function* (_: unknown, e: any) {
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' } as never
   })
-  return mock.clock(on, { now: Date.parse('2026-10-12T10:00:00Z') })
+  return mock.clock(on, { now: NOW })
 }
+
+// a turn begins: the session is busy until it finishes
+const begin = ($: any) => $.turn.start({ text: 'go', turnId: 't' } as never)
+
+// "a conversation finished": a turn of the main loop (or of a subagent) ends
+const finish = ($: any, agentId?: string) =>
+  $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer', agentId } as never)
 
 const flat = (n: any): string => (typeof n === 'string' ? n : (n?.children ?? []).map(flat).join(''))
 const all = (n: any, test: (x: any) => boolean): any[] =>
   typeof n === 'string' || !n ? [] : [...(test(n) ? [n] : []), ...(n.children ?? []).flatMap((c: any) => all(c, test))]
 const mount = ($: any, surface: 'terminal' | 'desktop' = 'terminal', props: object = PROPS) =>
   $.ui.mount({ plugin: 'usage-meter-mod', surface, component: 'AbovePrompt', props })
-// the expanded band: one child per line (model|effort, context, 5-hour, 7-day, cost)
+// the expanded band: one child per line (model|effort, context, 5-hour, 7-day, cost, then the limits note)
 const lines = async (ui: any) => ((await ui.drawn()).children ?? []) as any[]
 
-test('fresh session: opens expanded, no bars yet, Hide collapses it', async ($, on) => {
-  bottom(on, 'claude-opus-5-5')
+test('a new session shows the band at once, with its starting figures', async ($, on) => {
+  const clock = bottom(on, 'claude-opus-5-5', { settings: { effortLevel: 'high' } })
   await $.session.start(START)
+  await clock.advance(0) // the first fetch fails (503): no limits yet
 
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
     expect((await ui.find({ key: 'toggle' }))?.text).toContain('Hide')
     const rows = (await lines(ui)).map(flat)
-    expect(rows.length).toBe(5)
-    expect(rows[0]).toMatch(/Model.*Opus 5\.5.*Effort.*–/)
-    expect(rows[1]).toContain('– / 200k')
-    expect(rows[2]).toMatch(/5-hour.*–/)
+    expect(rows.length).toBe(6) // the last row is the limits note
+    expect(rows[0]).toMatch(/Model.*Opus 5\.5.*Effort.*●●●○○.*high/) // the effort it is set to, before any request
+    expect(rows[1]).toMatch(/Context.*0%.*Sunny.*0 \/ 200k/) // context 0
+    expect(rows[1]).toContain('▱'.repeat(20)) // an empty bar, not a placeholder
+    expect(rows[2]).toMatch(/5-hour.*–/) // no limit figure yet
     expect(rows[3]).toMatch(/7-day.*–/)
     expect(rows[4]).toContain('$0.00')
-    expect(flat(await ui.drawn())).not.toMatch(/[▰▱]/) // no bars before the first response
-    expect(flat(await ui.drawn())).not.toMatch(/Sunny|Cloudy|Rainy|Stormy/) // and no weather
     await ui.press({ key: 'toggle' })
     expect((await ui.find({ key: 'toggle' }))?.text).toContain('Details')
     expect(flat(await ui.drawn())).toContain('Opus 5.5')
     await ui.press({ key: 'toggle' })
     await ui.unmount()
   }
+})
+
+test('a new session’s limits arrive a moment after it starts', async ($, on) => {
+  const clock = bottom(on, 'claude-opus-5-5', { live: LIVE_NOW })
+  await $.session.start(START)
+  await clock.advance(0)
+
+  const ui = await mount($)
+  const rows = (await lines(ui)).map(flat)
+  expect(rows[2]).toMatch(/5-hour.*32%/)
+  expect(rows[3]).toMatch(/7-day.*28%/)
+  await ui.unmount()
+})
+
+test('with no effort setting the band says default; unreadable settings do not stop the seed', async ($, on) => {
+  const clock = bottom(on, 'claude-opus-5-5', { settings: 'fail' })
+  await $.session.start(START)
+  await clock.advance(0)
+
+  const ui = await mount($)
+  const rows = (await lines(ui)).map(flat)
+  expect(rows[0]).toMatch(/Model.*Opus 5\.5.*Effort.*default/)
+  expect(rows[1]).toMatch(/Context.*0%.*0 \/ 200k/)
+  await ui.unmount()
 })
 
 test('working session: one line per detail, bars coloured by zone', async ($, on) => {
@@ -180,13 +223,13 @@ test('live account usage replaces the session’s stale limits', async ($, on) =
   expect(text[2]).toMatch(/5-hour.*32%.*resets in 3h 43m/)
   expect(text[3]).toMatch(/7-day.*28%.*resets in 4d 9h/)
   expect(flat(await ui.drawn())).not.toMatch(/70%|22%/)
-  expect(flat(await ui.drawn())).toContain('limits live · just now')
-  // the note sits at the right end of the last line, the bottom-right corner of the pane
-  const cost = (await lines(ui))[4]
-  expect(cost.props.width).toBe(100)
-  expect(cost.props.justifyContent).toBe('space-between')
-  expect(flat(cost.children[0])).toMatch(/^Cost/)
-  expect(flat(cost.children.at(-1))).toBe('limits live · just now')
+  // the note gets its own last row, right-aligned, apart from the cost
+  const rows = await lines(ui)
+  expect(flat(rows[4])).toMatch(/^Cost/)
+  expect(flat(rows[4])).not.toContain('live')
+  expect(rows[5].props.width).toBe(100)
+  expect(rows[5].props.justifyContent).toBe('flex-end')
+  expect(flat(rows[5])).toBe(`live · ${hhmm(NOW)}`)
   await ui.unmount()
 })
 
@@ -205,18 +248,135 @@ test('a window past its reset is never shown with the old figure', async ($, on)
   await ui.unmount()
 })
 
-test('limits are fetched again as time passes, and the countdown moves', async ($, on) => {
+test('idle: the limits are re-read every minute, and a running turn is not on the clock', async ($, on) => {
+  const clock = bottom(on, 'claude-sonnet-5-5', { live: LIVE_NOW, usage: STALE_USAGE })
+  await $.session.start(START)
+  await clock.advance(0)
+  expect(LIVE.calls).toBe(1)
+
+  await clock.advance(75_000) // the first idle tick falls between 60 and 75 s (a random head start)
+  expect(LIVE.calls).toBe(2)
+  await clock.advance(60_000)
+  expect(LIVE.calls).toBe(3)
+
+  await begin($) // a turn is running: the clock leaves the refresh to its finish
+  await clock.advance(10 * 60_000)
+  expect(LIVE.calls).toBe(3)
+
+  await finish($) // it finishes: one refresh at once, and the idle minute resumes
+  await clock.advance(0)
+  expect(LIVE.calls).toBe(4)
+  await clock.advance(75_000)
+  expect(LIVE.calls).toBeGreaterThan(4)
+})
+
+test('during a turn the pane holds its figures; the finish refreshes at once', async ($, on) => {
   const clock = bottom(on, 'claude-sonnet-5-5', { live: LIVE_NOW, usage: STALE_USAGE })
   await $.session.start(START)
   await clock.advance(0)
 
+  await begin($)
   LIVE.body = live(50, '2026-10-12T13:43:00+00:00', 30, '2026-10-16T19:00:00+00:00')
-  await clock.advance(120_000)
-  const ui = await mount($)
+  await clock.advance(10 * 60_000) // ten minutes of a running turn
+  let ui = await mount($)
+  expect(flat((await lines(ui))[2])).toMatch(/5-hour.*32%/)
+  await ui.unmount()
+
+  await finish($)
+  await clock.advance(0)
+  ui = await mount($)
   const text = (await lines(ui)).map(flat)
-  expect(text[2]).toMatch(/5-hour.*50%.*resets in 3h 41m/)
+  expect(text[2]).toMatch(/5-hour.*50%.*resets in 3h 33m/) // the countdown is worked out at this redraw
   expect(text[3]).toMatch(/7-day.*30%/)
   await ui.unmount()
+})
+
+test('every finished conversation, main or subagent, refreshes; a burst ends on fresh figures', async ($, on) => {
+  const clock = bottom(on, 'claude-sonnet-5-5', { live: LIVE_NOW, usage: STALE_USAGE })
+  await $.session.start(START)
+  await clock.advance(0)
+  expect(LIVE.calls).toBe(1)
+
+  await clock.advance(30_000)
+  await finish($, 'sub-1') // a subagent's conversation finished
+  await clock.advance(0)
+  expect(LIVE.calls).toBe(2)
+
+  LIVE.body = live(61, '2026-10-12T13:43:00+00:00', 30, '2026-10-16T19:00:00+00:00')
+  await Promise.all([finish($, 'sub-2'), finish($), finish($, 'sub-3')]) // three at once, right after a request
+  await clock.advance(0)
+  expect(LIVE.calls).toBe(2) // none inside the minimum gap...
+  await clock.advance(20_000)
+  expect(LIVE.calls).toBe(3) // ...one when the gap ends, so the burst still ends on fresh figures
+  const ui = await mount($)
+  expect(flat((await lines(ui))[2])).toMatch(/5-hour.*61%/)
+  await ui.unmount()
+})
+
+test('a reply alone does not fetch', async ($, on) => {
+  const clock = bottom(on, 'claude-sonnet-5-5', { live: LIVE_NOW, usage: STALE_USAGE })
+  await $.session.start(START)
+  await clock.advance(0)
+
+  await clock.advance(30_000)
+  await $.session.measure(WORKING) // a reply updates context and cost only
+  await clock.advance(0)
+  expect(LIVE.calls).toBe(1)
+})
+
+test('HTTP 429: it honours Retry-After, keeps the last good figures, and resumes afterwards', async ($, on) => {
+  const clock = bottom(on, 'claude-sonnet-5-5', { live: LIVE_NOW, usage: STALE_USAGE })
+  await $.session.start(START)
+  await clock.advance(0)
+
+  await clock.advance(30_000)
+  LIVE.status = 429
+  LIVE.headers = { 'retry-after': '120' }
+  await finish($)
+  await clock.advance(0)
+  expect(LIVE.calls).toBe(2)
+  const pausedUntil = NOW + 30_000 + 120_000
+
+  let ui = await mount($)
+  expect(flat((await lines(ui))[2])).toMatch(/5-hour.*32%/) // still the last good reading, no flip to anything else
+  expect(flat((await lines(ui))[5])).toBe(`as of ${hhmm(NOW)} · 429, retry ${hhmm(pausedUntil)}`)
+  await ui.unmount()
+
+  await clock.advance(60_000) // still inside the pause: a finished turn does not ask
+  await finish($)
+  await clock.advance(0)
+  expect(LIVE.calls).toBe(2)
+
+  LIVE.status = 0 // the endpoint recovers
+  await clock.advance(70_000) // past the pause
+  await finish($)
+  await clock.advance(0)
+  expect(LIVE.calls).toBe(3)
+  ui = await mount($)
+  expect(flat((await lines(ui))[5])).toBe(`live · ${hhmm(NOW + 160_000)}`)
+  await ui.unmount()
+})
+
+test('HTTP 429 with no Retry-After waits five minutes', async ($, on) => {
+  const clock = bottom(on, 'claude-sonnet-5-5', { live: LIVE_NOW, usage: STALE_USAGE })
+  await $.session.start(START)
+  await clock.advance(0)
+
+  LIVE.status = 429
+  await clock.advance(30_000)
+  await finish($)
+  await clock.advance(0)
+  expect(LIVE.calls).toBe(2)
+
+  await clock.advance(4 * 60_000)
+  await finish($)
+  await clock.advance(0)
+  expect(LIVE.calls).toBe(2) // 4 minutes after the 429: still paused
+
+  await clock.advance(90_000)
+  await finish($)
+  await clock.advance(0)
+  expect(LIVE.calls).toBe(3) // past 5 minutes
 })
 
 test('a reply with no limits does not wipe what was fetched', async ($, on) => {
@@ -230,17 +390,16 @@ test('a reply with no limits does not wipe what was fetched', async ($, on) => {
   await ui.unmount()
 })
 
-test('when live limits cannot be fetched the band says why and how old the reply’s figures are', async ($, on) => {
+test('when live limits cannot be fetched the band says why, without naming where the figures came from', async ($, on) => {
   const clock = bottom(on, 'claude-sonnet-5-5') // the fetch answers 503
   await $.session.start(START)
   await $.session.measure(WORKING)
-  await clock.advance(4 * 60_000)
+  await clock.advance(0)
 
   const ui = await mount($)
-  expect(flat(await ui.drawn())).toContain('limits from last reply (HTTP 503) · 4m ago')
+  expect(flat((await lines(ui))[5])).toBe('live unavailable · HTTP 503')
   await ui.unmount()
 })
-
 
 test('a recent live reading outranks the session’s own figures; an old one does not', async ($, on) => {
   const clock = bottom(on, 'claude-sonnet-5-5', { live: LIVE_NOW, usage: STALE_USAGE })
@@ -261,27 +420,14 @@ test('a recent live reading outranks the session’s own figures; an old one doe
   await ui.unmount()
 })
 
-test('a reply makes the next tick ask for fresh limits at once', async ($, on) => {
-  const clock = bottom(on, 'claude-sonnet-5-5', { live: LIVE_NOW, usage: STALE_USAGE })
-  await $.session.start(START)
-  await clock.advance(0)
-
-  LIVE.body = live(61, '2026-10-12T13:43:00+00:00', 30, '2026-10-16T19:00:00+00:00')
-  await $.session.measure(WORKING) // a reply: usage just changed
-  await clock.advance(60_000) // one tick, well short of the 2-minute poll
-  const ui = await mount($)
-  expect(flat((await lines(ui))[2])).toMatch(/5-hour.*61%/)
-  await ui.unmount()
-})
-
 const showsWhy = (auth: 'none' | 'api-key', why: string) => async ($: any, on: any) => {
   const clock = bottom(on, 'claude-sonnet-5-5', { auth })
   await $.session.start(START)
   await $.session.measure(WORKING)
   await clock.advance(0)
   const ui = await mount($)
-  expect(flat(await ui.drawn())).toContain(`limits from last reply (${why})`)
+  expect(flat((await lines(ui))[5])).toBe(`live unavailable · ${why}`)
   await ui.unmount()
 }
 test('no login: the band says so', showsWhy('none', 'no login'))
-test('an API-key login has no plan limits: the band says so', showsWhy('api-key', 'no subscription login'))
+test('an API-key login has no plan limits: the band says so', showsWhy('api-key', 'no plan'))
