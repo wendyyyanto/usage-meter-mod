@@ -16,13 +16,14 @@ Click `[Hide ▾]` to collapse it to one line: `Sonnet 5.5 | high | 7d 78% 🌧�
 
 ## Install
 
-In a terminal session of Claude Code, run:
+In a terminal session of Claude Code, add the marketplace, then install the mod:
 
 ```
-/plugin install usage-meter-mod --marketplace wendyyyanto/usage-meter-mod
+/plugin marketplace add wendyyyanto/usage-meter-mod
+/plugin install usage-meter-mod@yanto-mods
 ```
 
-Answer `y` to add the marketplace, then pick the **user** scope. From then on it loads in every session you start or resume, including the desktop app's Code tab. Sessions that are already open pick it up when restarted or resumed.
+Pick the **user** scope. From then on it loads in every session you start or resume, including the desktop app's Code tab. Sessions that are already open pick it up when restarted or resumed.
 
 The `/plugin` command is a terminal command; the desktop app's Code tab says it isn't available there. Install from a terminal once and the desktop app loads it too.
 
