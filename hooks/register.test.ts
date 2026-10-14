@@ -27,7 +27,7 @@ const SURFACES = ['terminal', 'desktop'] as const
 const STEP = { turnId: 't', index: 0, model: 'claude-sonnet-5-5', messageCount: 1 }
 
 // what the account's plan-usage endpoint answers: body null makes it fail (503), status 429 rate-limits it
-const LIVE = { body: null as object | null, status: 0, headers: {} as Record<string, string>, calls: 0 }
+const LIVE = { body: null as object | null, status: 0, headers: {} as Record<string, string>, calls: 0, auths: 0 }
 const live = (five: number, fiveResets: string, seven: number, sevenResets: string) => ({
   five_hour: { utilization: five, resets_at: fiveResets, limit_dollars: null },
   seven_day: { utilization: seven, resets_at: sevenResets, limit_dollars: null },
@@ -39,11 +39,11 @@ const bottom = (
   model: string,
   opts: { live?: object | null; usage?: object; auth?: 'none' | 'api-key'; settings?: object | 'fail' } = {},
 ) => {
-  Object.assign(LIVE, { body: opts.live ?? null, status: 0, headers: {}, calls: 0 })
+  Object.assign(LIVE, { body: opts.live ?? null, status: 0, headers: {}, calls: 0, auths: 0 })
   on('session.usage', () => ({ value: opts.usage ?? FRESH }))
   on('session.model', () => ({ value: model }))
   on('settings.read', () => (opts.settings === 'fail' ? { deny: 'no settings' } : { value: opts.settings ?? {} }))
-  on('session.authorize', () => ({ value: opts.auth === 'none' ? null : { handle: 'h', kind: opts.auth ?? 'bearer' } }))
+  on('session.authorize', () => (LIVE.auths++, { value: opts.auth === 'none' ? null : { handle: 'h', kind: opts.auth ?? 'bearer' } }))
   on('http.fetch', () => {
     LIVE.calls += 1
     if (LIVE.status === 429) return { value: { status: 429, ok: false, headers: LIVE.headers, text: '' } }
@@ -251,15 +251,15 @@ const activate = async ($: any, clock: any) => {
   await clock.advance(5_000) // the start's refresh, now or when the minimum gap ends
 }
 
-test('idle: the limits are re-read every 5 seconds; a running turn takes the clock off', async ($, on) => {
+test('idle: the limits are re-read every minute; a running turn takes the clock off', async ($, on) => {
   const clock = bottom(on, 'claude-sonnet-5-5', { live: LIVE_NOW, usage: STALE_USAGE })
   await $.session.start(START)
   await clock.advance(0)
   expect(LIVE.calls).toBe(1) // the new session's own read
 
-  await clock.advance(60_000) // a tick every 5 s after a random 0-5 s head start: 11 or 12 of them
-  expect(LIVE.calls).toBeGreaterThanOrEqual(12)
-  expect(LIVE.calls).toBeLessThanOrEqual(13)
+  await clock.advance(120_000) // ticks every 5 s after a random 0-5 s head start; a read on the first a minute on
+  expect(LIVE.calls).toBeGreaterThanOrEqual(2)
+  expect(LIVE.calls).toBeLessThanOrEqual(3)
 
   const idleCalls = LIVE.calls
   await activate($, clock) // a conversation starts: one read for the start, then the clock stays out of it
@@ -268,11 +268,11 @@ test('idle: the limits are re-read every 5 seconds; a running turn takes the clo
   await clock.advance(10 * 60_000)
   expect(LIVE.calls).toBe(active)
 
-  await finish($) // it finishes: one read now, and the 5-second clock resumes
+  await finish($) // it finishes: one read now, and the idle clock resumes
   await clock.advance(0)
   expect(LIVE.calls).toBe(active + 1)
-  await clock.advance(60_000)
-  expect(LIVE.calls).toBeGreaterThanOrEqual(active + 1 + 10)
+  await clock.advance(65_000) // the first tick a minute after that read asks again
+  expect(LIVE.calls).toBe(active + 2)
 })
 
 test('during a turn the pane holds its figures; the finish refreshes at once', async ($, on) => {
@@ -384,9 +384,9 @@ test('HTTP 429 with no Retry-After waits five minutes, idle ticks included', asy
   const clock = bottom(on, 'claude-sonnet-5-5', { live: LIVE_NOW, usage: STALE_USAGE })
   await $.session.start(START)
   await clock.advance(0)
-  await clock.advance(30_000) // idle: ticks read the limits every 5 s
   LIVE.status = 429
-  await clock.advance(5_000) // the next tick is refused: that is the 429
+  await clock.advance(65_000) // the first idle read, a minute on, is refused: that is the 429
+  expect(LIVE.calls).toBe(2)
   const refused = LIVE.calls
 
   await clock.advance(4 * 60_000) // four minutes of idle ticks, all inside the pause
@@ -441,8 +441,57 @@ test('a recent live reading outranks the session’s own figures; an old one doe
   await ui.unmount()
 })
 
-// without a subscription login there are no plan limits to ask for: no request is made, and the
-// session's own figures show
+test('a failed read backs off, doubling each time; a good one starts over', async ($, on) => {
+  const clock = bottom(on, 'claude-sonnet-5-5') // the fetch answers 503
+  await $.session.start(START)
+  await clock.advance(0)
+  expect(LIVE.calls).toBe(1) // fails: no asking for 10 s
+  await activate($, clock) // the start's ask falls inside the pause
+  expect(LIVE.calls).toBe(1)
+
+  const ask = async () => { await finish($, 'sub'); await clock.advance(0) }
+  await clock.advance(5_000) // 10 s after the failure
+  await ask()
+  expect(LIVE.calls).toBe(2) // fails again: 20 s now
+  await clock.advance(15_000)
+  await ask()
+  expect(LIVE.calls).toBe(2)
+  await clock.advance(5_000)
+  await ask()
+  expect(LIVE.calls).toBe(3) // and again: 40 s
+
+  LIVE.body = LIVE_NOW
+  await clock.advance(40_000)
+  await ask()
+  expect(LIVE.calls).toBe(4) // a good read
+
+  LIVE.body = null
+  await clock.advance(5_000)
+  await ask()
+  expect(LIVE.calls).toBe(5) // fails: the pause is back to 10 s, not 80
+  await clock.advance(10_000)
+  await ask()
+  expect(LIVE.calls).toBe(6)
+})
+
+test('a reset time that cannot be read counts as current', async ($, on) => {
+  const clock = bottom(on, 'claude-sonnet-5-5')
+  await $.session.start(START)
+  await $.session.measure({
+    ...(WORKING as object),
+    rateLimits: [{ kind: 'five_hour', percentUsed: 31, resetsAt: 'garbage' }],
+  } as never)
+  await clock.advance(0)
+
+  const ui = await mount($)
+  const row = flat((await lines(ui))[2])
+  expect(row).toMatch(/5-hour.*31%/)
+  expect(row).not.toContain('window reset')
+  await ui.unmount()
+})
+
+// without a subscription login there are no plan limits to ask for: no request is made, the
+// session's own figures show, and idle ticks do not check the login again; a turn does
 const withoutPlanLogin = (auth: 'none' | 'api-key') => async ($: any, on: any) => {
   const clock = bottom(on, 'claude-sonnet-5-5', { auth, live: LIVE_NOW })
   await $.session.start(START)
@@ -454,6 +503,14 @@ const withoutPlanLogin = (auth: 'none' | 'api-key') => async ($: any, on: any) =
   expect(rows.length).toBe(5)
   expect(rows[2]).toMatch(/5-hour.*31%/)
   await ui.unmount()
+
+  expect(LIVE.auths).toBe(1)
+  await clock.advance(5 * 60_000)
+  expect(LIVE.auths).toBe(1)
+  await begin($)
+  await clock.advance(0)
+  expect(LIVE.auths).toBe(2)
+  expect(LIVE.calls).toBe(0)
 }
 test('no login: no request is made, the session’s figures show', withoutPlanLogin('none'))
 test('an API-key login has no plan limits: no request is made', withoutPlanLogin('api-key'))

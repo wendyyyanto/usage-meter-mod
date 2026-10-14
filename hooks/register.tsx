@@ -44,12 +44,13 @@ const BAR = 20; // cells in a bar: 5% a cell
 // what other sessions spend. The account's plan usage is what the real usage pane reads; the engine
 // holds the credential and attaches it (the mod never sees it), and only for Anthropic's own host.
 // It is asked for when a session starts, when a conversation starts, each time any turn finishes (main
-// or subagent), and every 5 seconds while the session sits idle (no turn running). A running turn is
+// or subagent), and once a minute while the session sits idle (no turn running). A running turn is
 // never on the clock: its start and its finishes ask instead.
-// Every ask goes through one guard (one request at a time, a minimum gap, a pause after a 429).
+// Every ask goes through one guard (one request at a time, a minimum gap, a pause after a 429 or a failure).
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const LIVE_FRESH = 300_000; // a live reading this young outranks the session's own figures
-const IDLE_EVERY = 5_000; // an idle session re-reads the limits this often
+const IDLE_EVERY = 5_000; // an idle session redraws this often, so countdowns keep counting
+const IDLE_FETCH_EVERY = 60_000; // and re-reads the limits this often
 const IDLE_JITTER = 5_000; // sessions that start together do not all tick together
 
 // a reload starts the module afresh, so all of these start over
@@ -57,14 +58,23 @@ let isFetching = false; // one request at a time
 let isActive = false; // a main-loop turn is running
 let isTrailing = false; // a skipped ask is already waiting for the gap to end
 let lastFetch = 0;
-let pausedUntil = 0; // after a 429, no request before this
+let pausedUntil = 0; // after a 429 or a failure, no request before this
+let failures = 0; // failed reads in a row: each one doubles the pause
+let hasPlan: boolean | undefined; // false: no subscription login, so idle ticks do not ask
+
+// 10s, 20s, 40s … up to 5 minutes; a success starts over
+const backOff = (now: number) => {
+	failures++;
+	pausedUntil = now + Math.min(PAUSE.default, PAUSE.min * 2 ** failures);
+};
 
 // Any failure leaves the band as it is: the last good figures, or the session's own.
 const refreshLimits = async ($: EngineInterface) => {
 	if (isFetching) return;
 	isFetching = true;
+	let now = 0;
 	try {
-		const now = await $.clock.now();
+		now = await $.clock.now();
 		if (now < pausedUntil) return;
 		const wait = PAUSE.min - (now - lastFetch);
 		if (wait > 0) {
@@ -81,7 +91,8 @@ const refreshLimits = async ($: EngineInterface) => {
 		}
 		lastFetch = now;
 		const auth = await $.session.authorize();
-		if (auth?.kind !== "bearer") return; // no subscription login: there are no plan limits
+		hasPlan = auth?.kind === "bearer";
+		if (!hasPlan) return; // no subscription login: there are no plan limits
 		const r = await $.http.fetch(USAGE_URL, {
 			auth: auth.handle,
 			headers: { "anthropic-beta": "oauth-2025-04-20" }
@@ -90,22 +101,27 @@ const refreshLimits = async ($: EngineInterface) => {
 			pausedUntil = now + retryDelay(r.headers["retry-after"], now);
 			return;
 		}
-		if (!r.ok) return;
+		if (!r.ok) return backOff(now);
 		const limits = parseUsage(JSON.parse(r.text));
+		failures = 0;
 		if (limits.length)
 			await patch($, { rateLimits: limits, rateAt: now, rateSource: "live" });
 	} catch {
 		// keep what the band already shows
+		if (now) backOff(now);
 	} finally {
 		isFetching = false;
 	}
 };
 
-// while idle (no turn running): re-read the limits and redraw, so the countdowns keep counting
+// while idle (no turn running): redraw, so the countdowns keep counting, and re-read the limits once a
+// minute; a session with no subscription login leaves that to its turns, which check the login again
 const idleTick = async ($: EngineInterface) => {
 	if (isActive) return;
-	await refreshLimits($);
-	await patch($, { tickAt: await $.clock.now() });
+	const now = await $.clock.now();
+	if (hasPlan !== false && now - lastFetch >= IDLE_FETCH_EVERY)
+		await refreshLimits($);
+	await patch($, { tickAt: now });
 };
 
 export const register: Register = (on) => {
@@ -135,7 +151,7 @@ export const register: Register = (on) => {
 			};
 		});
 		refreshLimits($).catch(() => {});
-		// and again every 5 seconds while idle; a random head start keeps sessions that began together apart
+		// and the idle clock; a random head start keeps sessions that began together apart
 		$.clock.after(Math.floor(Math.random() * IDLE_JITTER), () => {
 			$.clock.every(IDLE_EVERY, () => {
 				idleTick($).catch(() => {});
@@ -209,9 +225,12 @@ export const register: Register = (on) => {
 			/>
 		);
 		const ctxPct = percentOf(s.context);
-		// a window past its reset still holds the figure of the window that ended: never show it
-		const isCurrent = (r: UsageMeterSnap["rateLimits"][number]) =>
-			!r.resetsAt || Date.parse(r.resetsAt) > now;
+		// a window past its reset still holds the figure of the window that ended: never show it; a reset
+		// time that cannot be read says nothing about that, so the window counts as current
+		const isCurrent = (r: UsageMeterSnap["rateLimits"][number]) => {
+			const t = Date.parse(r.resetsAt ?? "");
+			return Number.isNaN(t) || t > now;
+		};
 		const worst = s.rateLimits
 			.filter(isCurrent)
 			.reduce<
